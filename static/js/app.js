@@ -4,6 +4,7 @@ let selectedFiles = new Set();
 let currentPath = '';
 let allFiles = [];
 let measuredSpeed = 0; // bytes per second
+let copyDismissed = false; // Track if user dismissed the complete overlay
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 
@@ -371,6 +372,7 @@ function confirmCopy() {
 
 async function startCopy() {
     closeModal();
+    copyDismissed = false;
     const subfolder = document.getElementById('subfolder-select').value;
     const files = Array.from(selectedFiles);
 
@@ -414,6 +416,7 @@ async function checkCopyStatus() {
         const s = await r.json();
 
         if (s.active) {
+            copyDismissed = false; // Reset dismissed when a new copy is active
             showProgressOverlay();
             document.getElementById('copy-progress-fill').style.width = s.progress.toFixed(1) + '%';
             document.getElementById('copy-progress-pct').textContent = s.progress.toFixed(0) + '%';
@@ -422,9 +425,9 @@ async function checkCopyStatus() {
             document.getElementById('copy-bytes').textContent = formatSize(s.bytes_copied) + ' / ' + formatSize(s.bytes_total);
             document.getElementById('copy-speed').textContent = s.speed_bps > 0 ? formatSize(s.speed_bps) + '/s' : '--';
             document.getElementById('copy-eta').textContent = s.eta_seconds > 0 ? formatTime(s.eta_seconds) : '--';
-        } else if (s.completed || s.cancelled) {
+        } else if ((s.completed || s.cancelled) && s.finished_at) {
             hideProgressOverlay();
-            if (s.finished_at && !document.getElementById('complete-overlay').dataset.shown) {
+            if (!copyDismissed) {
                 showCompleteOverlay(s);
             }
         }
@@ -472,15 +475,16 @@ function showCompleteOverlay(status) {
     `;
 
     overlay.style.display = 'flex';
-    overlay.dataset.shown = 'true';
 }
 
 function dismissComplete() {
     const overlay = document.getElementById('complete-overlay');
     overlay.style.display = 'none';
-    delete overlay.dataset.shown;
+    copyDismissed = true;
     selectedFiles.clear();
     updateActionBar();
+    // Reset server-side status so it doesn't persist
+    fetch('/api/copy/reset', { method: 'POST' }).catch(() => {});
 }
 
 // ── Modal ────────────────────────────────────────────────────────────────────

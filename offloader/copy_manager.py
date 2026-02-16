@@ -134,6 +134,30 @@ class CopyManager:
         with self._lock:
             self._status["cancelled"] = True
 
+    def reset(self):
+        """Reset status after user dismisses completion overlay."""
+        with self._lock:
+            if not self._status["active"]:
+                self._status = {
+                    "active": False,
+                    "progress": 0,
+                    "current_file": "",
+                    "current_file_index": 0,
+                    "total_files": 0,
+                    "bytes_copied": 0,
+                    "bytes_total": 0,
+                    "speed_bps": 0,
+                    "eta_seconds": 0,
+                    "error": None,
+                    "cancelled": False,
+                    "completed": False,
+                    "started_at": None,
+                    "finished_at": None,
+                    "subfolder": "",
+                    "files_completed": [],
+                    "files_failed": [],
+                }
+
     def _copy_worker(self, file_paths: list, dest_dir: Path, total_size: int):
         """Worker thread that performs the actual file copying."""
         bytes_copied_global = 0

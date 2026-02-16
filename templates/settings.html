@@ -45,10 +45,6 @@
                     <label>Password</label>
                     <input type="password" id="smb_password" class="text-input" placeholder="••••••••" autocomplete="current-password">
                 </div>
-                <div class="form-group">
-                    <label>Domain</label>
-                    <input type="text" id="smb_domain" class="text-input" placeholder="WORKGROUP">
-                </div>
                 <div class="form-actions">
                     <button class="btn" onclick="testSMB()">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
@@ -106,7 +102,6 @@
                 document.getElementById('smb_share').value = cfg.smb_share || '';
                 document.getElementById('smb_username').value = cfg.smb_username || '';
                 document.getElementById('smb_password').value = cfg.smb_password || '';
-                document.getElementById('smb_domain').value = cfg.smb_domain || 'WORKGROUP';
                 document.getElementById('discord_webhook_url').value = cfg.discord_webhook_url || '';
                 document.getElementById('discord_enabled').checked = cfg.discord_enabled || false;
             } catch (e) {
@@ -120,7 +115,6 @@
                 smb_share: document.getElementById('smb_share').value,
                 smb_username: document.getElementById('smb_username').value,
                 smb_password: document.getElementById('smb_password').value,
-                smb_domain: document.getElementById('smb_domain').value,
                 discord_webhook_url: document.getElementById('discord_webhook_url').value,
                 discord_enabled: document.getElementById('discord_enabled').checked,
             };
@@ -171,15 +165,17 @@
             await saveSettings();
             
             try {
-                const r = await fetch('/api/config');
-                const cfg = await r.json();
-                // Just use the save + a dedicated test endpoint would be better
-                // For now we trigger test via the webhook
-                const resp = await fetch('/api/config');
-                el.textContent = '✓ Check Discord';
-                el.className = 'test-result test-success';
+                const r = await fetch('/api/discord/test', { method: 'POST' });
+                const result = await r.json();
+                if (result.success) {
+                    el.textContent = '✓ Notification sent!';
+                    el.className = 'test-result test-success';
+                } else {
+                    el.textContent = '✗ ' + (result.error || 'Failed');
+                    el.className = 'test-result test-error';
+                }
             } catch (e) {
-                el.textContent = '✗ Error';
+                el.textContent = '✗ Network error';
                 el.className = 'test-result test-error';
             }
         }

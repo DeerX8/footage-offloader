@@ -105,6 +105,17 @@ def smb_test():
     return jsonify(result)
 
 
+@bp.route("/api/discord/test", methods=["POST"])
+def discord_test():
+    cfg = current_app.config["OFFLOADER"]
+    webhook_url = cfg.get("discord_webhook_url", "")
+    if not webhook_url:
+        return jsonify({"success": False, "error": "No webhook URL configured"})
+    from offloader.discord_notify import test_discord_webhook
+    result = test_discord_webhook(webhook_url)
+    return jsonify(result)
+
+
 @bp.route("/api/smb/mount", methods=["POST"])
 def smb_mount():
     cfg = current_app.config["OFFLOADER"]
@@ -186,6 +197,13 @@ def copy_cancel():
     manager: CopyManager = current_app.config["COPY_MANAGER"]
     manager.cancel()
     return jsonify({"status": "cancelling"})
+
+
+@bp.route("/api/copy/reset", methods=["POST"])
+def copy_reset():
+    manager: CopyManager = current_app.config["COPY_MANAGER"]
+    manager.reset()
+    return jsonify({"status": "ok"})
 
 
 # ── Speed Test API ────────────────────────────────────────────────────────────
