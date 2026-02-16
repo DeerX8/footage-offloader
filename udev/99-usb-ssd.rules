@@ -1,0 +1,8 @@
+# Footage Offloader - Auto-mount USB SSD
+# Triggers the offloader service to detect and mount the SSD when a USB storage device is connected.
+
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="partition", \
+    RUN+="/usr/bin/systemctl restart footage-offloader.service"
+
+ACTION=="remove", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="partition", \
+    RUN+="/usr/bin/systemctl restart footage-offloader.service"

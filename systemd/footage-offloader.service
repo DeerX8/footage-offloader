@@ -1,0 +1,18 @@
+[Unit]
+Description=Footage Offloader - SSD to NAS copy service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/footage-offloader
+Environment=OFFLOADER_CONFIG=/etc/footage-offloader/config.json
+ExecStart=/usr/bin/python3 /opt/footage-offloader/app.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
