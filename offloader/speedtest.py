@@ -1,23 +1,25 @@
-"""Speed test utility to measure write throughput to the SMB share."""
+"""Speed test utility to measure write throughput to the SMB share.
+
+Uses a time-based approach (like speedtest.net):
+  1. Warmup for a few seconds so TCP/SMB reach steady state
+  2. Measure for a fixed duration and count bytes written
+This way slow links don't take forever and fast links get enough data.
+"""
 
 import os
 import time
 import logging
-import tempfile
 from pathlib import Path
 
 logger = logging.getLogger("offloader.speedtest")
 
-# Test with 256MB of data
-TEST_SIZE_BYTES = 256 * 1024 * 1024
-CHUNK_SIZE = 4 * 1024 * 1024  # 4MB chunks
+CHUNK_SIZE = 8 * 1024 * 1024   # 8MB per write — matches typical SMB buffer
+WARMUP_SECONDS = 3             # Let TCP window + SMB buffers ramp up
+MEASURE_SECONDS = 10           # Measure sustained throughput for this long
 
 
 def run_speedtest(smb_mount_point: str) -> dict:
-    """Run a write speed test to the SMB mount point.
-    
-    Writes a temporary test file and measures throughput.
-    """
+    """Run a time-based write speed test to the SMB mount point."""
     mount_path = Path(smb_mount_point)
     if not mount_path.exists() or not mount_path.is_dir():
         return {"error": "SMB mount point not available"}
@@ -25,24 +27,27 @@ def run_speedtest(smb_mount_point: str) -> dict:
     test_file = mount_path / ".speedtest_tmp"
 
     try:
-        # Generate a chunk of random-ish data (repeating for speed)
+        # Pre-generate one chunk in RAM (not timed)
         chunk = os.urandom(CHUNK_SIZE)
-        chunks_needed = TEST_SIZE_BYTES // CHUNK_SIZE
-
-        # Write test
-        start = time.monotonic()
-        bytes_written = 0
 
         with open(test_file, "wb") as f:
-            for _ in range(chunks_needed):
+            # ── Warmup phase (not measured) ───────────────────────────
+            warmup_end = time.monotonic() + WARMUP_SECONDS
+            while time.monotonic() < warmup_end:
+                f.write(chunk)
+
+            # ── Measured phase ────────────────────────────────────────
+            bytes_written = 0
+            start = time.monotonic()
+            deadline = start + MEASURE_SECONDS
+
+            while time.monotonic() < deadline:
                 f.write(chunk)
                 bytes_written += CHUNK_SIZE
+
             f.flush()
-            os.fsync(f.fileno())
+            elapsed = time.monotonic() - start
 
-        elapsed = time.monotonic() - start
-
-        # Calculate speed
         speed_bps = bytes_written / elapsed if elapsed > 0 else 0
         speed_mbps = speed_bps / (1024 * 1024)
 
@@ -54,7 +59,11 @@ def run_speedtest(smb_mount_point: str) -> dict:
             "formatted": f"{speed_mbps:.1f} MB/s",
         }
 
-        logger.info(f"Speed test result: {speed_mbps:.1f} MB/s ({elapsed:.1f}s for {bytes_written / 1024 / 1024:.0f}MB)")
+        logger.info(
+            f"Speed test: {speed_mbps:.1f} MB/s "
+            f"({bytes_written // 1024 // 1024}MB in {elapsed:.1f}s, "
+            f"{WARMUP_SECONDS}s warmup)"
+        )
         return result
 
     except PermissionError:
@@ -64,7 +73,6 @@ def run_speedtest(smb_mount_point: str) -> dict:
     except Exception as e:
         return {"error": f"Speed test failed: {e}"}
     finally:
-        # Clean up test file
         try:
             test_file.unlink(missing_ok=True)
         except Exception:

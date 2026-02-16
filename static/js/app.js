@@ -411,10 +411,18 @@ function renderCopiedBadges() {
 async function runSpeedTest() {
     const btn = document.getElementById('btn-speedtest');
     const resultEl = document.getElementById('speedtest-result');
-    btn.innerHTML = '<span class="spinner"></span> Testing...';
     btn.disabled = true;
     resultEl.style.display = 'flex';
     document.getElementById('speed-value').textContent = '...';
+
+    // Show countdown (3s warmup + 10s measure)
+    let remaining = 13;
+    btn.textContent = remaining + 's';
+    const countdown = setInterval(() => {
+        remaining--;
+        if (remaining > 0) btn.textContent = remaining + 's';
+        else btn.textContent = '...';
+    }, 1000);
 
     try {
         const r = await fetch('/api/speedtest', { method: 'POST' });
@@ -426,13 +434,14 @@ async function runSpeedTest() {
             measuredSpeed = data.speed_bps || 0;
             document.getElementById('speed-value').textContent = data.speed_mbps || 0;
             showToast(`Speed: ${data.formatted}`);
-            updateActionBar(); // Recalc ETA
+            updateActionBar();
         }
     } catch (e) {
         document.getElementById('speed-value').textContent = 'Error';
         showToast('Speed test failed', 'error');
     }
-    btn.innerHTML = 'Run Test';
+    clearInterval(countdown);
+    btn.textContent = 'Run Test';
     btn.disabled = false;
 }
 
