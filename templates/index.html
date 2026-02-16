@@ -65,9 +65,10 @@
                 </div>
             </div>
             <div class="dest-selector">
-                <select id="subfolder-select" class="select-input">
+                <select id="subfolder-select" class="select-input" onchange="updateRemotePath()">
                     <option value="">Select project folder...</option>
                 </select>
+                <div class="remote-path" id="remote-path"></div>
                 <div class="new-folder-row">
                     <input type="text" id="new-folder-name" class="text-input" placeholder="New folder name...">
                     <button class="btn btn-sm" onclick="createSubfolder()">

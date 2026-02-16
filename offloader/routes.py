@@ -160,6 +160,41 @@ def smb_create_subfolder():
         return jsonify({"error": str(e)}), 500
 
 
+@bp.route("/api/smb/check-existing", methods=["POST"])
+def smb_check_existing():
+    """Check which files already exist at the destination (by name + size match)."""
+    cfg = current_app.config["OFFLOADER"]
+    data = request.get_json()
+    subfolder = data.get("subfolder", "")
+    files = data.get("files", [])
+
+    if not subfolder or not files:
+        return jsonify({"existing": []})
+
+    # Ensure SMB is mounted
+    from offloader.smb import mount_smb
+    mount_smb(cfg)
+
+    dest_dir = Path(cfg["smb_mount_point"]) / subfolder
+    existing = []
+
+    if dest_dir.exists():
+        for rel_path in files:
+            dest_file = dest_dir / Path(rel_path).name
+            src_file = Path(cfg["ssd_mount_point"]) / rel_path
+            if dest_file.exists():
+                try:
+                    # Match by name + size
+                    dest_size = dest_file.stat().st_size
+                    src_size = src_file.stat().st_size if src_file.exists() else -1
+                    if dest_size == src_size:
+                        existing.append(rel_path)
+                except OSError:
+                    pass
+
+    return jsonify({"existing": existing})
+
+
 # ── Copy API ──────────────────────────────────────────────────────────────────
 
 @bp.route("/api/copy/start", methods=["POST"])

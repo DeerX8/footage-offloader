@@ -196,6 +196,31 @@ body {
 }
 select option { background: var(--bg-card); color: var(--text-primary); }
 
+/* ── Remote Path Display ──────────────────────────────────────────────────── */
+.remote-path {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    padding: 2px 2px;
+    word-break: break-all;
+    min-height: 1em;
+}
+
+/* ── Copied Badge ─────────────────────────────────────────────────────────── */
+.copied-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 0.68rem;
+    font-weight: 500;
+    color: var(--green);
+    background: var(--green-dim);
+    padding: 1px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+}
+.copied-badge svg { width: 10px; height: 10px; }
+
 /* ── Speed Test ───────────────────────────────────────────────────────────── */
 .speedtest-result {
     display: flex; align-items: baseline; gap: 6px;

@@ -5,10 +5,14 @@ let currentPath = '';
 let allFiles = [];
 let measuredSpeed = 0; // bytes per second
 let copyDismissed = false; // Track if user dismissed the complete overlay
+let smbHost = '';
+let smbShare = '';
+let existingFiles = new Set(); // Files already copied to destination
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
+    loadConfig();
     loadSystemInfo();
     checkSSD();
     refreshSubfolders();
@@ -16,6 +20,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // Poll copy status every 2s
     setInterval(checkCopyStatus, 2000);
 });
+
+// ── Config ───────────────────────────────────────────────────────────────────
+
+async function loadConfig() {
+    try {
+        const r = await fetch('/api/config');
+        const cfg = await r.json();
+        smbHost = cfg.smb_host || '';
+        smbShare = cfg.smb_share || '';
+        updateRemotePath();
+    } catch (e) { }
+}
 
 // ── System Info ──────────────────────────────────────────────────────────────
 
@@ -186,6 +202,12 @@ async function loadFiles(path) {
 
         listEl.innerHTML = html;
         updateActionBar();
+
+        // Check which files are already copied to the selected destination
+        const subfolder = document.getElementById('subfolder-select').value;
+        if (subfolder && allFiles.length > 0) {
+            checkExistingFiles(subfolder);
+        }
     } catch (e) {
         listEl.innerHTML = `<div class="empty-state"><p>Error loading files</p></div>`;
     }
@@ -315,11 +337,73 @@ async function createSubfolder() {
             input.value = '';
             await refreshSubfolders();
             document.getElementById('subfolder-select').value = name;
+            updateRemotePath();
             showToast('Folder created');
         }
     } catch (e) {
         showToast('Failed to create folder', 'error');
     }
+}
+
+function updateRemotePath() {
+    const el = document.getElementById('remote-path');
+    const subfolder = document.getElementById('subfolder-select').value;
+    if (smbHost && smbShare) {
+        const parts = ['//' + smbHost, smbShare];
+        if (subfolder) parts.push(subfolder);
+        el.textContent = parts.join('/');
+    } else if (smbHost) {
+        el.textContent = '//' + smbHost + (subfolder ? '/' + subfolder : '');
+    } else {
+        el.textContent = subfolder ? subfolder : '';
+    }
+    // Re-check existing files when subfolder changes
+    if (subfolder && allFiles.length > 0) {
+        checkExistingFiles(subfolder);
+    } else {
+        existingFiles.clear();
+        renderCopiedBadges();
+    }
+}
+
+async function checkExistingFiles(subfolder) {
+    if (!subfolder || allFiles.length === 0) return;
+    try {
+        const filePaths = allFiles.map(f => f.path);
+        const r = await fetch('/api/smb/check-existing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ subfolder, files: filePaths }),
+        });
+        const data = await r.json();
+        existingFiles = new Set(data.existing || []);
+        renderCopiedBadges();
+    } catch (e) {
+        console.error('Check existing failed:', e);
+    }
+}
+
+function renderCopiedBadges() {
+    document.querySelectorAll('.file-item').forEach(el => {
+        const check = el.querySelector('.file-check');
+        if (!check) return; // directory item
+        // Find the file path from the onclick attribute
+        const onclick = el.getAttribute('onclick') || '';
+        const match = onclick.match(/toggleFile\('([^']+)'/);
+        if (!match) return;
+        const path = match[1];
+        // Remove existing badge
+        const old = el.querySelector('.copied-badge');
+        if (old) old.remove();
+        // Add badge if file exists at destination
+        if (existingFiles.has(path)) {
+            const badge = document.createElement('span');
+            badge.className = 'copied-badge';
+            badge.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg> Archived';
+            const meta = el.querySelector('.file-meta');
+            if (meta) meta.appendChild(badge);
+        }
+    });
 }
 
 // ── Speed Test ───────────────────────────────────────────────────────────────
