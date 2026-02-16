@@ -7,12 +7,28 @@ import urllib.error
 
 logger = logging.getLogger("offloader.discord")
 
+# Discord blocks the default Python-urllib User-Agent with 403 Forbidden.
+# A proper User-Agent header is required for all webhook requests.
+HEADERS = {
+    "Content-Type": "application/json",
+    "User-Agent": "FootageOffloader/1.0 (Raspberry Pi; webhook bot)",
+}
+
+
+def _post_webhook(webhook_url: str, payload: dict):
+    """Build and execute a Discord webhook POST request."""
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        webhook_url,
+        data=data,
+        headers=HEADERS,
+        method="POST",
+    )
+    return urllib.request.urlopen(req, timeout=15)
+
 
 def send_discord_notification(webhook_url: str, message: str, username: str = "Footage Offloader"):
-    """Send a message to a Discord webhook.
-    
-    Uses urllib to avoid requiring the requests library.
-    """
+    """Send a message to a Discord webhook."""
     if not webhook_url:
         return
 
@@ -21,20 +37,10 @@ def send_discord_notification(webhook_url: str, message: str, username: str = "F
         "content": message,
     }
 
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        webhook_url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-
     try:
-        with urllib.request.urlopen(req, timeout=10) as response:
-            if response.status in (200, 204):
-                logger.info("Discord notification sent")
-            else:
-                logger.warning(f"Discord returned status {response.status}")
+        resp = _post_webhook(webhook_url, payload)
+        resp.close()
+        logger.info("Discord notification sent")
     except urllib.error.HTTPError as e:
         logger.error(f"Discord HTTP error: {e.code} {e.reason}")
     except urllib.error.URLError as e:
@@ -46,27 +52,23 @@ def send_discord_notification(webhook_url: str, message: str, username: str = "F
 def test_discord_webhook(webhook_url: str) -> dict:
     """Test if a Discord webhook URL is valid by sending a test message."""
     if not webhook_url:
-        return {"success": False, "error": "No webhook URL provided"}
+        return {"success": False, "error": "No webhook URL configured"}
 
-    if not webhook_url.startswith("https://discord.com/api/webhooks/"):
-        return {"success": False, "error": "Invalid webhook URL format"}
+    if "discord.com/api/webhooks/" not in webhook_url:
+        return {"success": False, "error": "Invalid webhook URL — must be a Discord webhook URL"}
+
+    payload = {
+        "username": "Footage Offloader",
+        "content": "🔔 **Footage Offloader** — Test notification\nWebhook is working correctly!",
+    }
 
     try:
-        payload = {
-            "username": "Footage Offloader",
-            "content": "🔔 **Footage Offloader** — Test notification\nWebhook is working correctly!",
-        }
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            webhook_url,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10) as response:
-            if response.status in (200, 204):
-                return {"success": True, "message": "Test notification sent"}
-            return {"success": False, "error": f"Discord returned status {response.status}"}
+        resp = _post_webhook(webhook_url, payload)
+        status = resp.status
+        resp.close()
+        if status in (200, 204):
+            return {"success": True, "message": "Test notification sent"}
+        return {"success": False, "error": f"Discord returned status {status}"}
     except urllib.error.HTTPError as e:
         return {"success": False, "error": f"HTTP {e.code}: {e.reason}"}
     except urllib.error.URLError as e:
