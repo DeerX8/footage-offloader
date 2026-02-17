@@ -438,6 +438,29 @@ select option { background: var(--bg-card); color: var(--text-primary); }
 .test-success { color: var(--green); }
 .test-error { color: var(--red); }
 
+/* ── Mode Selector ────────────────────────────────────────────────────────── */
+.mode-selector { display: flex; gap: 10px; }
+.mode-option { flex: 1; cursor: pointer; }
+.mode-option input { display: none; }
+.mode-card {
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 12px 14px;
+    border: 2px solid var(--border);
+    border-radius: var(--radius-sm);
+    transition: var(--transition);
+}
+.mode-card strong { font-size: 0.85rem; }
+.mode-card span { font-size: 0.72rem; color: var(--text-muted); }
+.mode-option input:checked ~ .mode-card {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+}
+
+/* ── Pubkey Box ───────────────────────────────────────────────────────────── */
+.pubkey-box { margin-top: 8px; }
+.pubkey-box label { font-size: 0.78rem; color: var(--text-secondary); display: block; margin-bottom: 4px; }
+.pubkey-box textarea { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.72rem; resize: none; }
+
 /* ── Toggle ───────────────────────────────────────────────────────────────── */
 .toggle { position: relative; display: inline-block; width: 42px; height: 24px; }
 .toggle input { opacity: 0; width: 0; height: 0; }

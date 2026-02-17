@@ -13,11 +13,17 @@ from offloader.copy_manager import CopyManager
 
 CONFIG_PATH = os.environ.get("OFFLOADER_CONFIG", "/etc/footage-offloader/config.json")
 DEFAULT_CONFIG = {
+    "transfer_mode": "smb",          # "smb" or "rsync"
     "smb_host": "",
     "smb_share": "",
     "smb_username": "",
     "smb_password": "",
     "smb_domain": "WORKGROUP",
+    "ssh_host": "",                   # Can be Tailscale IP
+    "ssh_user": "",
+    "ssh_port": 22,
+    "ssh_key_path": "/root/.ssh/id_rsa",
+    "ssh_remote_path": "",            # e.g. /volume1/footage
     "discord_webhook_url": "",
     "discord_enabled": False,
     "ssd_mount_point": "/mnt/ssd",

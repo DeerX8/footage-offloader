@@ -7,6 +7,9 @@ let measuredSpeed = 0; // bytes per second
 let copyDismissed = false; // Track if user dismissed the complete overlay
 let smbHost = '';
 let smbShare = '';
+let sshHost = '';
+let sshRemotePath = '';
+let transferMode = 'smb';
 let existingFiles = new Set(); // Files already copied to destination
 
 // ── Init ─────────────────────────────────────────────────────────────────────
@@ -29,6 +32,9 @@ async function loadConfig() {
         const cfg = await r.json();
         smbHost = cfg.smb_host || '';
         smbShare = cfg.smb_share || '';
+        sshHost = cfg.ssh_host || '';
+        sshRemotePath = cfg.ssh_remote_path || '';
+        transferMode = cfg.transfer_mode || 'smb';
         updateRemotePath();
     } catch (e) { }
 }
@@ -348,14 +354,22 @@ async function createSubfolder() {
 function updateRemotePath() {
     const el = document.getElementById('remote-path');
     const subfolder = document.getElementById('subfolder-select').value;
-    if (smbHost && smbShare) {
-        const parts = ['//' + smbHost, smbShare];
-        if (subfolder) parts.push(subfolder);
-        el.textContent = parts.join('/');
-    } else if (smbHost) {
-        el.textContent = '//' + smbHost + (subfolder ? '/' + subfolder : '');
+
+    if (transferMode === 'rsync') {
+        if (sshHost && sshRemotePath) {
+            const path = sshRemotePath.replace(/\/$/, '') + (subfolder ? '/' + subfolder : '');
+            el.textContent = sshHost + ':' + path;
+        } else {
+            el.textContent = subfolder || '';
+        }
     } else {
-        el.textContent = subfolder ? subfolder : '';
+        if (smbHost && smbShare) {
+            const parts = ['//' + smbHost, smbShare];
+            if (subfolder) parts.push(subfolder);
+            el.textContent = parts.join('/');
+        } else {
+            el.textContent = subfolder || '';
+        }
     }
     // Re-check existing files when subfolder changes
     if (subfolder && allFiles.length > 0) {

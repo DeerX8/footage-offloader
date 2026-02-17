@@ -50,7 +50,9 @@ def update_config():
     cfg = current_app.config["OFFLOADER"]
 
     for key in [
+        "transfer_mode",
         "smb_host", "smb_share", "smb_username", "smb_domain",
+        "ssh_host", "ssh_user", "ssh_port", "ssh_key_path", "ssh_remote_path",
         "discord_webhook_url", "discord_enabled",
     ]:
         if key in data:
@@ -116,6 +118,71 @@ def discord_test():
     return jsonify(result)
 
 
+@bp.route("/api/ssh/test", methods=["POST"])
+def ssh_test():
+    """Test SSH connectivity for rsync mode."""
+    cfg = current_app.config["OFFLOADER"]
+    host = cfg.get("ssh_host", "")
+    user = cfg.get("ssh_user", "")
+    port = cfg.get("ssh_port", 22)
+    key_path = cfg.get("ssh_key_path", "")
+    remote_path = cfg.get("ssh_remote_path", "")
+
+    if not host or not user:
+        return jsonify({"success": False, "error": "SSH host and user required"})
+
+    ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=accept-new",
+               "-o", "ConnectTimeout=10", "-o", "BatchMode=yes",
+               "-p", str(port)]
+    if key_path:
+        ssh_cmd += ["-i", key_path]
+    ssh_cmd += [f"{user}@{host}", "echo ok"]
+
+    try:
+        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode == 0:
+            # Also check remote path exists
+            if remote_path:
+                check_cmd = ssh_cmd[:-1] + [f"test -d {remote_path} && echo exists"]
+                check = subprocess.run(check_cmd, capture_output=True, text=True, timeout=10)
+                if "exists" in check.stdout:
+                    return jsonify({"success": True, "message": f"Connected — remote path OK"})
+                return jsonify({"success": True, "message": "Connected — remote path not found (will be created)"})
+            return jsonify({"success": True, "message": "SSH connection successful"})
+        error = result.stderr.strip()[:200]
+        return jsonify({"success": False, "error": error or "SSH connection failed"})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "Connection timed out"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@bp.route("/api/ssh/keygen", methods=["POST"])
+def ssh_keygen():
+    """Generate SSH key pair if none exists."""
+    key_path = current_app.config["OFFLOADER"].get("ssh_key_path", "/root/.ssh/id_rsa")
+    if Path(key_path).exists():
+        # Read public key
+        pub_path = key_path + ".pub"
+        pub_key = ""
+        if Path(pub_path).exists():
+            pub_key = Path(pub_path).read_text().strip()
+        return jsonify({"exists": True, "public_key": pub_key})
+
+    try:
+        Path(key_path).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        result = subprocess.run(
+            ["ssh-keygen", "-t", "ed25519", "-f", key_path, "-N", "", "-C", "footage-offloader"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            pub_key = Path(key_path + ".pub").read_text().strip()
+            return jsonify({"exists": True, "generated": True, "public_key": pub_key})
+        return jsonify({"exists": False, "error": result.stderr.strip()})
+    except Exception as e:
+        return jsonify({"exists": False, "error": str(e)})
+
+
 @bp.route("/api/smb/mount", methods=["POST"])
 def smb_mount():
     cfg = current_app.config["OFFLOADER"]
@@ -133,13 +200,38 @@ def smb_unmount():
 @bp.route("/api/smb/subfolders")
 def smb_subfolders():
     cfg = current_app.config["OFFLOADER"]
-    # Ensure SMB is mounted
-    mount_result = mount_smb(cfg)
-    if not mount_result.get("mounted"):
-        return jsonify({"error": "SMB not mounted", "subfolders": []})
+    mode = cfg.get("transfer_mode", "smb")
 
-    subfolders = list_smb_subfolders(cfg["smb_mount_point"])
-    return jsonify({"subfolders": subfolders})
+    if mode == "rsync":
+        # List remote subfolders via SSH
+        host = cfg.get("ssh_host", "")
+        user = cfg.get("ssh_user", "")
+        port = cfg.get("ssh_port", 22)
+        key_path = cfg.get("ssh_key_path", "")
+        remote_path = cfg.get("ssh_remote_path", "")
+        if not host or not user or not remote_path:
+            return jsonify({"error": "SSH not configured", "subfolders": []})
+
+        ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=accept-new",
+                   "-o", "ConnectTimeout=10", "-o", "BatchMode=yes",
+                   "-p", str(port)]
+        if key_path:
+            ssh_cmd += ["-i", key_path]
+        ssh_cmd += [f"{user}@{host}",
+                    f"mkdir -p {remote_path} && ls -1d {remote_path}/*/ 2>/dev/null | xargs -I{{}} basename {{}}"]
+        try:
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15)
+            folders = [f.strip() for f in result.stdout.strip().split('\n') if f.strip()]
+            return jsonify({"subfolders": sorted(folders)})
+        except Exception as e:
+            return jsonify({"error": str(e), "subfolders": []})
+    else:
+        # SMB mode
+        mount_result = mount_smb(cfg)
+        if not mount_result.get("mounted"):
+            return jsonify({"error": "SMB not mounted", "subfolders": []})
+        subfolders = list_smb_subfolders(cfg["smb_mount_point"])
+        return jsonify({"subfolders": subfolders})
 
 
 @bp.route("/api/smb/create-subfolder", methods=["POST"])
@@ -150,14 +242,33 @@ def smb_create_subfolder():
     if not name:
         return jsonify({"error": "Folder name is required"}), 400
 
-    # Sanitize
     name = name.replace("/", "_").replace("\\", "_").replace("..", "_")
-    target = Path(cfg["smb_mount_point"]) / name
-    try:
-        target.mkdir(parents=True, exist_ok=True)
-        return jsonify({"status": "ok", "name": name})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    mode = cfg.get("transfer_mode", "smb")
+
+    if mode == "rsync":
+        host = cfg.get("ssh_host", "")
+        user = cfg.get("ssh_user", "")
+        port = cfg.get("ssh_port", 22)
+        key_path = cfg.get("ssh_key_path", "")
+        remote_path = cfg.get("ssh_remote_path", "")
+        ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-p", str(port)]
+        if key_path:
+            ssh_cmd += ["-i", key_path]
+        ssh_cmd += [f"{user}@{host}", f"mkdir -p '{remote_path}/{name}'"]
+        try:
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15)
+            if result.returncode == 0:
+                return jsonify({"status": "ok", "name": name})
+            return jsonify({"error": result.stderr.strip()}), 500
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    else:
+        target = Path(cfg["smb_mount_point"]) / name
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            return jsonify({"status": "ok", "name": name})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
 
 @bp.route("/api/smb/check-existing", methods=["POST"])
@@ -171,28 +282,66 @@ def smb_check_existing():
     if not subfolder or not files:
         return jsonify({"existing": []})
 
-    # Ensure SMB is mounted
-    from offloader.smb import mount_smb
-    mount_smb(cfg)
+    mode = cfg.get("transfer_mode", "smb")
+    ssd_mount = cfg["ssd_mount_point"]
 
-    dest_dir = Path(cfg["smb_mount_point"]) / subfolder
-    existing = []
+    if mode == "rsync":
+        # Check via SSH: get list of filename:size pairs at remote dest
+        host = cfg.get("ssh_host", "")
+        user = cfg.get("ssh_user", "")
+        port = cfg.get("ssh_port", 22)
+        key_path = cfg.get("ssh_key_path", "")
+        remote_path = cfg.get("ssh_remote_path", "")
+        remote_dir = f"{remote_path}/{subfolder}"
 
-    if dest_dir.exists():
-        for rel_path in files:
-            dest_file = dest_dir / Path(rel_path).name
-            src_file = Path(cfg["ssd_mount_point"]) / rel_path
-            if dest_file.exists():
-                try:
-                    # Match by name + size
-                    dest_size = dest_file.stat().st_size
-                    src_size = src_file.stat().st_size if src_file.exists() else -1
-                    if dest_size == src_size:
-                        existing.append(rel_path)
-                except OSError:
-                    pass
+        ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                   "-p", str(port)]
+        if key_path:
+            ssh_cmd += ["-i", key_path]
+        # Get filename and size for all files in remote dir (non-recursive top-level)
+        ssh_cmd += [f"{user}@{host}",
+                    f"find '{remote_dir}' -maxdepth 2 -type f -printf '%f\\t%s\\n' 2>/dev/null"]
+        try:
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=30)
+            remote_files = {}
+            for line in result.stdout.strip().split('\n'):
+                if '\t' in line:
+                    name, size = line.rsplit('\t', 1)
+                    try:
+                        remote_files[name.strip()] = int(size.strip())
+                    except ValueError:
+                        pass
 
-    return jsonify({"existing": existing})
+            existing = []
+            for rel_path in files:
+                fname = Path(rel_path).name
+                src = Path(ssd_mount) / rel_path
+                if fname in remote_files and src.exists():
+                    try:
+                        if remote_files[fname] == src.stat().st_size:
+                            existing.append(rel_path)
+                    except OSError:
+                        pass
+            return jsonify({"existing": existing})
+        except Exception:
+            return jsonify({"existing": []})
+    else:
+        # SMB mode
+        from offloader.smb import mount_smb
+        mount_smb(cfg)
+        dest_dir = Path(cfg["smb_mount_point"]) / subfolder
+        existing = []
+        if dest_dir.exists():
+            for rel_path in files:
+                dest_file = dest_dir / Path(rel_path).name
+                src_file = Path(ssd_mount) / rel_path
+                if dest_file.exists():
+                    try:
+                        if dest_file.stat().st_size == src_file.stat().st_size:
+                            existing.append(rel_path)
+                    except OSError:
+                        pass
+        return jsonify({"existing": existing})
 
 
 # ── Copy API ──────────────────────────────────────────────────────────────────
@@ -212,12 +361,20 @@ def copy_start():
     manager: CopyManager = current_app.config["COPY_MANAGER"]
     manager.update_config(cfg)
 
-    # Ensure SMB is mounted
-    mount_result = mount_smb(cfg)
-    if not mount_result.get("mounted"):
-        return jsonify({"error": "Cannot mount SMB share"}), 500
+    mode = cfg.get("transfer_mode", "smb")
 
-    result = manager.start_copy(files, subfolder)
+    if mode == "rsync":
+        # Validate SSH config
+        if not cfg.get("ssh_host") or not cfg.get("ssh_user") or not cfg.get("ssh_remote_path"):
+            return jsonify({"error": "SSH not configured — check Settings"}), 500
+        result = manager.start_copy(files, subfolder)
+    else:
+        # Ensure SMB is mounted
+        mount_result = mount_smb(cfg)
+        if not mount_result.get("mounted"):
+            return jsonify({"error": "Cannot mount SMB share"}), 500
+        result = manager.start_copy(files, subfolder)
+
     return jsonify(result)
 
 

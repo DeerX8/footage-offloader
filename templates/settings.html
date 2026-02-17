@@ -18,8 +18,36 @@
     </header>
 
     <main class="container settings-container">
-        <!-- SMB Configuration -->
+        <!-- Transfer Mode -->
         <section class="card">
+            <div class="card-header">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+                    <span>Transfer Method</span>
+                </div>
+            </div>
+            <div class="settings-form">
+                <div class="mode-selector">
+                    <label class="mode-option" id="mode-smb-label">
+                        <input type="radio" name="transfer_mode" value="smb" id="mode_smb" onchange="toggleMode()">
+                        <div class="mode-card">
+                            <strong>SMB</strong>
+                            <span>Mounted share — best for LAN</span>
+                        </div>
+                    </label>
+                    <label class="mode-option" id="mode-rsync-label">
+                        <input type="radio" name="transfer_mode" value="rsync" id="mode_rsync" onchange="toggleMode()">
+                        <div class="mode-card">
+                            <strong>rsync / SSH</strong>
+                            <span>Streaming — best for WAN / 4G</span>
+                        </div>
+                    </label>
+                </div>
+            </div>
+        </section>
+
+        <!-- SMB Configuration -->
+        <section class="card" id="smb-section">
             <div class="card-header">
                 <div class="card-title">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1"/><circle cx="6" cy="18" r="1"/></svg>
@@ -30,12 +58,11 @@
                 <div class="form-group">
                     <label>Server Address</label>
                     <input type="text" id="smb_host" class="text-input" placeholder="192.168.1.100 or nas.local">
-                    <span class="form-hint">IP address or hostname of your NAS (Tailscale IP for remote)</span>
+                    <span class="form-hint">IP address or hostname of your NAS</span>
                 </div>
                 <div class="form-group">
                     <label>Share Name</label>
                     <input type="text" id="smb_share" class="text-input" placeholder="footage">
-                    <span class="form-hint">The SMB share name on your NAS</span>
                 </div>
                 <div class="form-group">
                     <label>Username</label>
@@ -51,6 +78,56 @@
                         Test Connection
                     </button>
                     <span id="smb-test-result" class="test-result"></span>
+                </div>
+            </div>
+        </section>
+
+        <!-- SSH / rsync Configuration -->
+        <section class="card" id="ssh-section" style="display:none">
+            <div class="card-header">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2"/><path d="M7 8l4 4-4 4"/><line x1="13" y1="16" x2="17" y2="16"/></svg>
+                    <span>SSH / rsync Connection</span>
+                </div>
+            </div>
+            <div class="settings-form">
+                <div class="form-group">
+                    <label>SSH Host</label>
+                    <input type="text" id="ssh_host" class="text-input" placeholder="100.x.y.z (Tailscale IP)">
+                    <span class="form-hint">Tailscale IP or hostname of your NAS</span>
+                </div>
+                <div class="form-group">
+                    <label>SSH User</label>
+                    <input type="text" id="ssh_user" class="text-input" placeholder="admin">
+                </div>
+                <div class="form-group">
+                    <label>SSH Port</label>
+                    <input type="number" id="ssh_port" class="text-input" placeholder="22" value="22">
+                </div>
+                <div class="form-group">
+                    <label>Remote Path</label>
+                    <input type="text" id="ssh_remote_path" class="text-input" placeholder="/volume1/footage">
+                    <span class="form-hint">Absolute path on the NAS where project folders live</span>
+                </div>
+                <div class="form-group">
+                    <label>SSH Key Path</label>
+                    <input type="text" id="ssh_key_path" class="text-input" placeholder="/root/.ssh/id_rsa" value="/root/.ssh/id_rsa">
+                    <span class="form-hint">Leave default unless you know what you're doing</span>
+                </div>
+                <div class="form-actions" style="flex-wrap:wrap;gap:8px">
+                    <button class="btn" onclick="testSSH()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                        Test SSH
+                    </button>
+                    <button class="btn btn-ghost" onclick="generateKey()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                        Generate SSH Key
+                    </button>
+                    <span id="ssh-test-result" class="test-result"></span>
+                </div>
+                <div id="ssh-pubkey-box" class="pubkey-box" style="display:none">
+                    <label>Public Key (add to NAS authorized_keys):</label>
+                    <textarea id="ssh-pubkey" class="text-input" rows="3" readonly onclick="this.select()"></textarea>
                 </div>
             </div>
         </section>
@@ -93,7 +170,12 @@
     </main>
 
     <script>
-        // Load current settings
+        function toggleMode() {
+            const isRsync = document.getElementById('mode_rsync').checked;
+            document.getElementById('smb-section').style.display = isRsync ? 'none' : 'block';
+            document.getElementById('ssh-section').style.display = isRsync ? 'block' : 'none';
+        }
+
         async function loadSettings() {
             try {
                 const r = await fetch('/api/config');
@@ -102,8 +184,20 @@
                 document.getElementById('smb_share').value = cfg.smb_share || '';
                 document.getElementById('smb_username').value = cfg.smb_username || '';
                 document.getElementById('smb_password').value = cfg.smb_password || '';
+                document.getElementById('ssh_host').value = cfg.ssh_host || '';
+                document.getElementById('ssh_user').value = cfg.ssh_user || '';
+                document.getElementById('ssh_port').value = cfg.ssh_port || 22;
+                document.getElementById('ssh_remote_path').value = cfg.ssh_remote_path || '';
+                document.getElementById('ssh_key_path').value = cfg.ssh_key_path || '/root/.ssh/id_rsa';
                 document.getElementById('discord_webhook_url').value = cfg.discord_webhook_url || '';
                 document.getElementById('discord_enabled').checked = cfg.discord_enabled || false;
+
+                if (cfg.transfer_mode === 'rsync') {
+                    document.getElementById('mode_rsync').checked = true;
+                } else {
+                    document.getElementById('mode_smb').checked = true;
+                }
+                toggleMode();
             } catch (e) {
                 console.error('Failed to load config:', e);
             }
@@ -111,10 +205,16 @@
 
         async function saveSettings() {
             const data = {
+                transfer_mode: document.getElementById('mode_rsync').checked ? 'rsync' : 'smb',
                 smb_host: document.getElementById('smb_host').value,
                 smb_share: document.getElementById('smb_share').value,
                 smb_username: document.getElementById('smb_username').value,
                 smb_password: document.getElementById('smb_password').value,
+                ssh_host: document.getElementById('ssh_host').value,
+                ssh_user: document.getElementById('ssh_user').value,
+                ssh_port: parseInt(document.getElementById('ssh_port').value) || 22,
+                ssh_remote_path: document.getElementById('ssh_remote_path').value,
+                ssh_key_path: document.getElementById('ssh_key_path').value,
                 discord_webhook_url: document.getElementById('discord_webhook_url').value,
                 discord_enabled: document.getElementById('discord_enabled').checked,
             };
@@ -125,9 +225,7 @@
                     body: JSON.stringify(data),
                 });
                 const result = await r.json();
-                if (result.status === 'ok') {
-                    showToast('Settings saved');
-                }
+                if (result.status === 'ok') showToast('Settings saved');
             } catch (e) {
                 showToast('Failed to save', 'error');
             }
@@ -137,23 +235,48 @@
             const el = document.getElementById('smb-test-result');
             el.textContent = 'Testing...';
             el.className = 'test-result';
-            
-            // Save first
             await saveSettings();
-            
             try {
                 const r = await fetch('/api/smb/test', {method: 'POST'});
                 const result = await r.json();
-                if (result.success) {
-                    el.textContent = '✓ Connected';
-                    el.className = 'test-result test-success';
-                } else {
-                    el.textContent = '✗ ' + (result.error || 'Failed');
-                    el.className = 'test-result test-error';
-                }
+                el.textContent = result.success ? '✓ Connected' : '✗ ' + (result.error || 'Failed');
+                el.className = 'test-result ' + (result.success ? 'test-success' : 'test-error');
             } catch (e) {
                 el.textContent = '✗ Network error';
                 el.className = 'test-result test-error';
+            }
+        }
+
+        async function testSSH() {
+            const el = document.getElementById('ssh-test-result');
+            el.textContent = 'Connecting...';
+            el.className = 'test-result';
+            await saveSettings();
+            try {
+                const r = await fetch('/api/ssh/test', {method: 'POST'});
+                const result = await r.json();
+                el.textContent = result.success ? '✓ ' + result.message : '✗ ' + (result.error || 'Failed');
+                el.className = 'test-result ' + (result.success ? 'test-success' : 'test-error');
+            } catch (e) {
+                el.textContent = '✗ Network error';
+                el.className = 'test-result test-error';
+            }
+        }
+
+        async function generateKey() {
+            await saveSettings();
+            try {
+                const r = await fetch('/api/ssh/keygen', {method: 'POST'});
+                const result = await r.json();
+                if (result.public_key) {
+                    document.getElementById('ssh-pubkey-box').style.display = 'block';
+                    document.getElementById('ssh-pubkey').value = result.public_key;
+                    showToast(result.generated ? 'Key generated' : 'Key already exists');
+                } else {
+                    showToast(result.error || 'Key generation failed', 'error');
+                }
+            } catch (e) {
+                showToast('Failed', 'error');
             }
         }
 
@@ -161,19 +284,12 @@
             const el = document.getElementById('discord-test-result');
             el.textContent = 'Sending...';
             el.className = 'test-result';
-            
             await saveSettings();
-            
             try {
                 const r = await fetch('/api/discord/test', { method: 'POST' });
                 const result = await r.json();
-                if (result.success) {
-                    el.textContent = '✓ Notification sent!';
-                    el.className = 'test-result test-success';
-                } else {
-                    el.textContent = '✗ ' + (result.error || 'Failed');
-                    el.className = 'test-result test-error';
-                }
+                el.textContent = result.success ? '✓ Notification sent!' : '✗ ' + (result.error || 'Failed');
+                el.className = 'test-result ' + (result.success ? 'test-success' : 'test-error');
             } catch (e) {
                 el.textContent = '✗ Network error';
                 el.className = 'test-result test-error';
@@ -186,10 +302,7 @@
             toast.textContent = msg;
             document.body.appendChild(toast);
             setTimeout(() => toast.classList.add('toast-show'), 10);
-            setTimeout(() => {
-                toast.classList.remove('toast-show');
-                setTimeout(() => toast.remove(), 300);
-            }, 2500);
+            setTimeout(() => { toast.classList.remove('toast-show'); setTimeout(() => toast.remove(), 300); }, 2500);
         }
 
         loadSettings();

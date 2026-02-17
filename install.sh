@@ -42,6 +42,7 @@ apt-get install -y -qq \
     python3 python3-pip python3-venv \
     cifs-utils smbclient \
     exfat-fuse exfatprogs ntfs-3g \
+    rsync openssh-client \
     avahi-daemon \
     > /dev/null 2>&1
 ok "System packages installed"
