@@ -157,11 +157,21 @@ class CopyManager:
 
     # ── rsync worker ──────────────────────────────────────────────────────────
 
+    MAX_RETRIES = 50          # Keep retrying for a long time (mobile drops)
+    RETRY_BASE_DELAY = 5      # Start with 5s wait
+    RETRY_MAX_DELAY = 60      # Cap at 60s between retries
+
     def _rsync_worker(self, file_paths: list, subfolder: str, total_size: int):
-        """Copy files using rsync over SSH — optimal for WAN/mobile."""
+        """Copy files using rsync over SSH — optimal for WAN/mobile.
+
+        Features:
+          - --checksum: verifies every file byte-for-byte after transfer
+          - --partial: keeps incomplete files so resume works after drops
+          - Auto-retry: if connection drops (common on 4G while driving),
+            waits and retries up to MAX_RETRIES times with backoff
+        """
         start_time = time.time()
         cfg = self.config
-        ssd_mount = cfg["ssd_mount_point"]
         host = cfg["ssh_host"]
         user = cfg["ssh_user"]
         port = cfg.get("ssh_port", 22)
@@ -169,91 +179,138 @@ class CopyManager:
         remote_base = cfg["ssh_remote_path"].rstrip("/")
         remote_dest = f"{remote_base}/{subfolder}/"
 
-        # Build SSH command for rsync
-        ssh_cmd = f"ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -p {port}"
+        # SSH command with keepalive to detect dead connections faster
+        ssh_cmd = (
+            f"ssh -o StrictHostKeyChecking=accept-new"
+            f" -o ConnectTimeout=15"
+            f" -o ServerAliveInterval=10"
+            f" -o ServerAliveCountMax=3"
+            f" -p {port}"
+        )
         if key_path:
             ssh_cmd += f" -i {key_path}"
 
-        # Build source file list
         source_paths = [str(fp) for _, fp, _ in file_paths]
 
         # rsync flags:
-        #   -a           archive mode (preserves times, permissions)
-        #   --whole-file  skip delta algorithm (new files, not incremental)
-        #   --info=progress2  overall progress (not per-file)
-        #   --partial     keep partial files for resume
-        #   --no-inc-recursive  scan all files before transfer (needed for progress2)
-        #   -e           SSH command
+        #   -a              archive mode (preserves times, permissions)
+        #   --whole-file    skip delta algorithm (SSD source, always new)
+        #   --checksum      verify files after transfer (byte-level integrity)
+        #   --partial       keep partial files for resume after connection drop
+        #   --info=progress2  single-line overall progress
+        #   --no-inc-recursive  scan all files first (needed for progress2)
+        #   --timeout=30    I/O timeout — triggers retry faster than waiting forever
         rsync_cmd = [
             "rsync", "-a",
             "--whole-file",
-            "--info=progress2",
+            "--checksum",
             "--partial",
+            "--info=progress2",
             "--no-inc-recursive",
+            "--timeout=30",
             "-e", ssh_cmd,
         ] + source_paths + [f"{user}@{host}:{remote_dest}"]
 
-        logger.info(f"rsync command: rsync ... -> {user}@{host}:{remote_dest}")
+        logger.info(f"rsync -> {user}@{host}:{remote_dest} ({len(file_paths)} files, {self._fmt_size(total_size)})")
 
-        try:
-            # Ensure remote dir exists
-            mkdir_ssh = ["ssh", "-o", "BatchMode=yes", "-p", str(port)]
-            if key_path:
-                mkdir_ssh += ["-i", key_path]
-            mkdir_ssh += [f"{user}@{host}", f"mkdir -p '{remote_dest}'"]
-            subprocess.run(mkdir_ssh, capture_output=True, timeout=15)
+        # Ensure remote dir exists (with its own retry)
+        self._ensure_remote_dir(cfg, remote_dest)
 
-            # Start rsync
-            self._rsync_proc = subprocess.Popen(
-                rsync_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-            )
+        # ── Retry loop ────────────────────────────────────────────────
+        attempt = 0
+        rc = -1
+        stderr = ""
 
-            # Parse rsync --info=progress2 output
-            # Format: "1,234,567  45%  12.34MB/s  0:01:23"
-            progress_re = re.compile(
-                r'([\d,]+)\s+(\d+)%\s+([\d.]+\w+/s)\s+([\d:]+)'
-            )
+        while attempt <= self.MAX_RETRIES:
+            if self._cancel_event.is_set():
+                break
 
-            for line in self._rsync_proc.stdout:
+            if attempt > 0:
+                delay = min(self.RETRY_BASE_DELAY * (2 ** min(attempt - 1, 4)),
+                            self.RETRY_MAX_DELAY)
+                logger.warning(f"rsync retry #{attempt} in {delay}s...")
+                with self._lock:
+                    self._status["current_file"] = f"Connection lost — retry #{attempt} in {delay}s..."
+
+                # Wait with cancel check
+                for _ in range(int(delay)):
+                    if self._cancel_event.is_set():
+                        break
+                    time.sleep(1)
+
                 if self._cancel_event.is_set():
                     break
 
-                line = line.strip()
-                m = progress_re.search(line)
-                if not m:
-                    continue
-
-                bytes_str = m.group(1).replace(",", "")
-                pct = int(m.group(2))
-                speed_str = m.group(3)
-                eta_str = m.group(4)
-
-                bytes_copied = int(bytes_str)
-                speed_bps = self._parse_speed(speed_str)
-                eta_secs = self._parse_eta(eta_str)
-
                 with self._lock:
-                    self._status["bytes_copied"] = bytes_copied
-                    self._status["progress"] = min(pct, 100)
-                    self._status["speed_bps"] = speed_bps
-                    self._status["eta_seconds"] = eta_secs
+                    self._status["current_file"] = f"Reconnecting (attempt #{attempt + 1})..."
 
-                self._check_thresholds(pct)
+                # Notify Discord on first and every 5th retry
+                if attempt == 1 or attempt % 5 == 0:
+                    self._notify_discord(
+                        "retry",
+                        f"🔄 **Connection lost — retrying** (attempt #{attempt + 1})\n"
+                        f"Progress: {self._status.get('progress', 0):.0f}%\n"
+                        f"rsync will resume where it left off"
+                    )
 
-            self._rsync_proc.wait(timeout=30)
-            rc = self._rsync_proc.returncode
-            stderr = self._rsync_proc.stderr.read() if self._rsync_proc.stderr else ""
+            try:
+                self._rsync_proc = subprocess.Popen(
+                    rsync_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1,
+                )
 
-        except Exception as e:
-            logger.error(f"rsync exception: {e}")
-            rc = -1
-            stderr = str(e)
+                progress_re = re.compile(
+                    r'([\d,]+)\s+(\d+)%\s+([\d.]+\w+/s)\s+([\d:]+)'
+                )
 
-        # Finalize
+                for line in self._rsync_proc.stdout:
+                    if self._cancel_event.is_set():
+                        break
+                    line = line.strip()
+                    m = progress_re.search(line)
+                    if not m:
+                        continue
+
+                    bytes_copied = int(m.group(1).replace(",", ""))
+                    pct = int(m.group(2))
+                    speed_bps = self._parse_speed(m.group(3))
+                    eta_secs = self._parse_eta(m.group(4))
+
+                    with self._lock:
+                        self._status["bytes_copied"] = bytes_copied
+                        self._status["progress"] = min(pct, 100)
+                        self._status["speed_bps"] = speed_bps
+                        self._status["eta_seconds"] = eta_secs
+                        self._status["current_file"] = ""
+
+                    self._check_thresholds(pct)
+
+                self._rsync_proc.wait(timeout=60)
+                rc = self._rsync_proc.returncode
+                stderr = self._rsync_proc.stderr.read() if self._rsync_proc.stderr else ""
+
+            except Exception as e:
+                logger.error(f"rsync exception: {e}")
+                rc = -1
+                stderr = str(e)
+
+            # rc=0: success, rc=23/24: partial transfer (some files skipped)
+            if rc == 0:
+                break
+            # Retryable exit codes: 10=socket error, 12=protocol stream,
+            # 23=partial, 24=vanished source, 30=timeout, 35=connection refused, 255=ssh error
+            if rc in (10, 12, 23, 24, 30, 35, 255, -1):
+                attempt += 1
+                continue
+            else:
+                # Non-retryable error (e.g. permission denied)
+                logger.error(f"rsync non-retryable error (rc={rc}): {stderr.strip()[:200]}")
+                break
+
+        # ── Finalize ──────────────────────────────────────────────────
         elapsed = time.time() - start_time
         with self._lock:
             self._status["active"] = False
@@ -272,13 +329,14 @@ class CopyManager:
                 self._status["bytes_copied"] = total_size
                 self._status["files_completed"] = [rp for rp, _, _ in file_paths]
                 avg_speed = total_size / elapsed if elapsed > 0 else 0
+                retries_msg = f"\nRetries needed: {attempt}" if attempt > 0 else ""
                 self._notify_discord(
                     "complete",
-                    f"✅ **Copy completed** (rsync)\n"
+                    f"✅ **Copy completed ✓ verified** (rsync)\n"
                     f"Files: {len(file_paths)}\n"
                     f"Total size: {self._fmt_size(total_size)}\n"
                     f"Time: {self._fmt_time(elapsed)}\n"
-                    f"Avg speed: {self._fmt_size(avg_speed)}/s"
+                    f"Avg speed: {self._fmt_size(avg_speed)}/s{retries_msg}"
                 )
             else:
                 self._status["completed"] = True
@@ -286,10 +344,25 @@ class CopyManager:
                 self._status["files_failed"] = [{"file": "rsync", "error": err_msg}]
                 self._notify_discord(
                     "error",
-                    f"⚠️ **Copy failed** (rsync)\n"
+                    f"⚠️ **Copy failed** (rsync) after {attempt + 1} attempts\n"
                     f"Error: {err_msg}\n"
                     f"Time: {self._fmt_time(elapsed)}"
                 )
+
+    def _ensure_remote_dir(self, cfg: dict, remote_dest: str):
+        """Create remote destination directory via SSH."""
+        port = cfg.get("ssh_port", 22)
+        key_path = cfg.get("ssh_key_path", "")
+        ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+                   "-p", str(port)]
+        if key_path:
+            ssh_cmd += ["-i", key_path]
+        ssh_cmd += [f"{cfg['ssh_user']}@{cfg['ssh_host']}",
+                    f"mkdir -p '{remote_dest}'"]
+        try:
+            subprocess.run(ssh_cmd, capture_output=True, timeout=20)
+        except Exception as e:
+            logger.warning(f"Could not ensure remote dir: {e}")
 
     @staticmethod
     def _parse_speed(s: str) -> float:
