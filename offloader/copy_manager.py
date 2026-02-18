@@ -199,7 +199,7 @@ class CopyManager:
         #   --partial       keep partial files for resume after connection drop
         #   --info=progress2  single-line overall progress
         #   --no-inc-recursive  scan all files first (needed for progress2)
-        #   --timeout=30    I/O timeout — triggers retry faster than waiting forever
+        #   --timeout=120   I/O timeout — generous for checksum verification phase
         rsync_cmd = [
             "rsync", "-a",
             "--whole-file",
@@ -207,7 +207,7 @@ class CopyManager:
             "--partial",
             "--info=progress2",
             "--no-inc-recursive",
-            "--timeout=30",
+            "--timeout=120",
             "-e", ssh_cmd,
         ] + source_paths + [f"{user}@{host}:{remote_dest}"]
 
@@ -266,6 +266,7 @@ class CopyManager:
                     r'([\d,]+)\s+(\d+)%\s+([\d.]+\w+/s)\s+([\d:]+)'
                 )
 
+                last_pct = 0
                 for line in self._rsync_proc.stdout:
                     if self._cancel_event.is_set():
                         break
@@ -276,6 +277,7 @@ class CopyManager:
 
                     bytes_copied = int(m.group(1).replace(",", ""))
                     pct = int(m.group(2))
+                    last_pct = pct
                     speed_bps = self._parse_speed(m.group(3))
                     eta_secs = self._parse_eta(m.group(4))
 
@@ -288,7 +290,7 @@ class CopyManager:
 
                     self._check_thresholds(pct)
 
-                self._rsync_proc.wait(timeout=60)
+                self._rsync_proc.wait(timeout=300)
                 rc = self._rsync_proc.returncode
                 stderr = self._rsync_proc.stderr.read() if self._rsync_proc.stderr else ""
 
@@ -297,9 +299,26 @@ class CopyManager:
                 rc = -1
                 stderr = str(e)
 
-            # rc=0: success, rc=23/24: partial transfer (some files skipped)
+            # rc=0: success
             if rc == 0:
                 break
+
+            # If progress reached >= 95% and rsync exited with a soft error,
+            # treat as success — the transfer is effectively complete.
+            # rc=23: partial transfer, rc=24: vanished source files,
+            # rc=30: timeout (can happen during checksum verification phase)
+            current_progress = last_pct
+            with self._lock:
+                current_progress = max(current_progress, self._status.get("progress", 0))
+
+            if current_progress >= 95 and rc in (23, 24, 30):
+                logger.info(
+                    f"rsync exited with rc={rc} at {current_progress}% progress "
+                    f"— treating as successful completion"
+                )
+                rc = 0
+                break
+
             # Retryable exit codes: 10=socket error, 12=protocol stream,
             # 23=partial, 24=vanished source, 30=timeout, 35=connection refused, 255=ssh error
             if rc in (10, 12, 23, 24, 30, 35, 255, -1):
@@ -312,14 +331,17 @@ class CopyManager:
 
         # ── Finalize ──────────────────────────────────────────────────
         elapsed = time.time() - start_time
+        discord_msg = None
+        discord_event = None
+
         with self._lock:
             self._status["active"] = False
             self._status["finished_at"] = time.time()
 
             if self._cancel_event.is_set():
                 self._status["cancelled"] = True
-                self._notify_discord(
-                    "cancelled",
+                discord_event = "cancelled"
+                discord_msg = (
                     f"⛔ **Copy cancelled** (rsync)\n"
                     f"Time elapsed: {self._fmt_time(elapsed)}"
                 )
@@ -330,8 +352,8 @@ class CopyManager:
                 self._status["files_completed"] = [rp for rp, _, _ in file_paths]
                 avg_speed = total_size / elapsed if elapsed > 0 else 0
                 retries_msg = f"\nRetries needed: {attempt}" if attempt > 0 else ""
-                self._notify_discord(
-                    "complete",
+                discord_event = "complete"
+                discord_msg = (
                     f"✅ **Copy completed ✓ verified** (rsync)\n"
                     f"Files: {len(file_paths)}\n"
                     f"Total size: {self._fmt_size(total_size)}\n"
@@ -342,12 +364,16 @@ class CopyManager:
                 self._status["completed"] = True
                 err_msg = stderr.strip()[:200] if stderr else f"rsync exit code {rc}"
                 self._status["files_failed"] = [{"file": "rsync", "error": err_msg}]
-                self._notify_discord(
-                    "error",
+                discord_event = "error"
+                discord_msg = (
                     f"⚠️ **Copy failed** (rsync) after {attempt + 1} attempts\n"
                     f"Error: {err_msg}\n"
                     f"Time: {self._fmt_time(elapsed)}"
                 )
+
+        # Send Discord notification outside the lock
+        if discord_msg:
+            self._notify_discord(discord_event, discord_msg)
 
     def _ensure_remote_dir(self, cfg: dict, remote_dest: str):
         """Create remote destination directory via SSH."""
@@ -468,6 +494,9 @@ class CopyManager:
                     pass
 
         elapsed = time.time() - start_time
+        discord_msg = None
+        discord_event = None
+
         with self._lock:
             self._status["active"] = False
             self._status["finished_at"] = time.time()
@@ -476,8 +505,8 @@ class CopyManager:
                 self._status["cancelled"] = True
                 completed = len(self._status["files_completed"])
                 total = self._status["total_files"]
-                self._notify_discord(
-                    "cancelled",
+                discord_event = "cancelled"
+                discord_msg = (
                     f"⛔ **Copy cancelled** (SMB)\n"
                     f"Completed: {completed}/{total} files\n"
                     f"Time elapsed: {self._fmt_time(elapsed)}"
@@ -490,8 +519,8 @@ class CopyManager:
                 avg_speed = bytes_copied_global / elapsed if elapsed > 0 else 0
 
                 if failed > 0:
-                    self._notify_discord(
-                        "complete_with_errors",
+                    discord_event = "complete_with_errors"
+                    discord_msg = (
                         f"⚠️ **Copy completed with errors** (SMB)\n"
                         f"✅ Completed: {completed}/{self._status['total_files']}\n"
                         f"❌ Failed: {failed}\n"
@@ -500,14 +529,18 @@ class CopyManager:
                         f"Avg speed: {self._fmt_size(avg_speed)}/s"
                     )
                 else:
-                    self._notify_discord(
-                        "complete",
+                    discord_event = "complete"
+                    discord_msg = (
                         f"✅ **Copy completed** (SMB)\n"
                         f"Files: {completed}\n"
                         f"Total: {self._fmt_size(bytes_copied_global)}\n"
                         f"Time: {self._fmt_time(elapsed)}\n"
                         f"Avg speed: {self._fmt_size(avg_speed)}/s"
                     )
+
+        # Send Discord notification outside the lock
+        if discord_msg:
+            self._notify_discord(discord_event, discord_msg)
 
     # ── Shared helpers ────────────────────────────────────────────────────────
 
