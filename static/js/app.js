@@ -536,6 +536,11 @@ async function checkCopyStatus() {
             hideProgressOverlay();
             if (!copyDismissed) {
                 showCompleteOverlay(s);
+                // Refresh "Archived" badges now that copy is done
+                const subfolder = document.getElementById('subfolder-select').value;
+                if (subfolder) {
+                    checkExistingFiles(subfolder);
+                }
             }
         }
     } catch (e) { }
@@ -590,6 +595,11 @@ function dismissComplete() {
     copyDismissed = true;
     selectedFiles.clear();
     updateActionBar();
+    // Refresh "Archived" badges
+    const subfolder = document.getElementById('subfolder-select').value;
+    if (subfolder && allFiles.length > 0) {
+        checkExistingFiles(subfolder);
+    }
     // Reset server-side status so it doesn't persist
     fetch('/api/copy/reset', { method: 'POST' }).catch(() => {});
 }
