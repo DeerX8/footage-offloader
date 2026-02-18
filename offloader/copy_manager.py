@@ -431,13 +431,18 @@ class CopyManager:
         except ValueError:
             return 0
 
-    # ── SMB worker (unchanged logic, larger chunks) ───────────────────────────
+    # ── SMB worker (flat copy, no parent dirs) ─────────────────────────────────
 
     def _smb_worker(self, file_paths: list, dest_dir: Path, total_size: int):
-        """Copy files via mounted SMB share — best for LAN."""
+        """Copy files via mounted SMB share — best for LAN.
+
+        Copies files flat to the destination (no parent directory structure).
+        """
         bytes_copied_global = 0
         start_time = time.time()
         chunk_size = 8 * 1024 * 1024  # 8MB chunks
+
+        dest_dir.mkdir(parents=True, exist_ok=True)
 
         for idx, (rel_path, src_path, file_size) in enumerate(file_paths):
             if self._cancel_event.is_set():
@@ -447,10 +452,8 @@ class CopyManager:
                 self._status["current_file"] = rel_path
                 self._status["current_file_index"] = idx + 1
 
-            rel_parent = Path(rel_path).parent
-            file_dest_dir = dest_dir / rel_parent if str(rel_parent) != "." else dest_dir
-            file_dest_dir.mkdir(parents=True, exist_ok=True)
-            dest_path = file_dest_dir / src_path.name
+            # Flat copy: file goes directly into dest_dir, no sub-directories
+            dest_path = dest_dir / src_path.name
 
             try:
                 bytes_copied_file = 0

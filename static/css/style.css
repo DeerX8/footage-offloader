@@ -229,6 +229,48 @@ select option { background: var(--bg-card); color: var(--text-primary); }
 .speed-value { font-size: 1.8rem; font-weight: 700; color: var(--accent); line-height: 1; }
 .speed-unit { font-size: 0.85rem; color: var(--text-muted); }
 
+/* ── File Type Filters ────────────────────────────────────────────────────── */
+.filter-bar {
+    display: flex; gap: 6px;
+    padding: 4px 0 8px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+.filter-btn {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 5px 12px;
+    font-size: 0.78rem; font-weight: 500;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: var(--transition);
+    white-space: nowrap;
+    font-family: inherit;
+}
+.filter-btn svg { width: 13px; height: 13px; }
+.filter-btn:hover { color: var(--text-secondary); border-color: var(--border-light); background: var(--bg-hover); }
+.filter-btn.active {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-dim);
+}
+.filter-count {
+    font-size: 0.68rem;
+    background: var(--bg-active);
+    color: var(--text-muted);
+    padding: 0 5px;
+    border-radius: 8px;
+    min-width: 16px;
+    text-align: center;
+    line-height: 1.4;
+}
+.filter-btn.active .filter-count {
+    background: rgba(79, 140, 255, 0.25);
+    color: var(--accent);
+}
+
 /* ── Breadcrumb ───────────────────────────────────────────────────────────── */
 .breadcrumb {
     display: flex; align-items: center; gap: 4px;

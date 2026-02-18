@@ -3,6 +3,7 @@
 let selectedFiles = new Set();
 let currentPath = '';
 let allFiles = [];
+let allDirectories = [];
 let measuredSpeed = 0; // bytes per second
 let copyDismissed = false; // Track if user dismissed the complete overlay
 let smbHost = '';
@@ -11,6 +12,19 @@ let sshHost = '';
 let sshRemotePath = '';
 let transferMode = 'smb';
 let existingFiles = new Set(); // Files already copied to destination
+let currentFilter = 'all'; // Current file type filter
+
+// File type extension groups
+const FILE_TYPE_EXTS = {
+    video: ['.mp4', '.mov', '.avi', '.mkv', '.mxf', '.r3d', '.braw', '.mts', '.m2ts',
+            '.prores', '.webm', '.wmv', '.flv', '.m4v', '.3gp', '.ts', '.mpg', '.mpeg',
+            '.vob', '.dv', '.dnxhd', '.dnxhr', '.cine', '.ari'],
+    photo: ['.jpg', '.jpeg', '.png', '.tiff', '.tif', '.cr2', '.cr3', '.nef', '.arw',
+            '.dng', '.raw', '.heic', '.heif', '.bmp', '.gif', '.webp', '.psd', '.raf',
+            '.orf', '.rw2', '.srw', '.x3f', '.pef', '.iiq'],
+    audio: ['.wav', '.mp3', '.aac', '.flac', '.ogg', '.aiff', '.m4a', '.wma',
+            '.alac', '.opus', '.bwf', '.amb', '.w64'],
+};
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 
@@ -149,6 +163,55 @@ async function unmountSSD() {
     }
 }
 
+// ── File Type Filters ────────────────────────────────────────────────────
+
+function fileMatchesFilter(ext) {
+    if (currentFilter === 'all') return true;
+    const exts = FILE_TYPE_EXTS[currentFilter] || [];
+    return exts.includes(ext.toLowerCase());
+}
+
+function setFilter(filter) {
+    currentFilter = filter;
+    // Update active button
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.filter === filter);
+    });
+    // Re-render file list with filter applied
+    renderFileList();
+}
+
+function getVisibleFiles() {
+    return allFiles.filter(f => fileMatchesFilter(f.ext));
+}
+
+function updateFilterCounts() {
+    const counts = { all: allFiles.length, video: 0, photo: 0, audio: 0 };
+    for (const f of allFiles) {
+        const ext = f.ext.toLowerCase();
+        if (FILE_TYPE_EXTS.video.includes(ext)) counts.video++;
+        if (FILE_TYPE_EXTS.photo.includes(ext)) counts.photo++;
+        if (FILE_TYPE_EXTS.audio.includes(ext)) counts.audio++;
+    }
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        const filter = btn.dataset.filter;
+        const count = counts[filter];
+        const label = btn.querySelector('.filter-count');
+        if (count !== undefined && count > 0 && filter !== 'all') {
+            if (label) {
+                label.textContent = count;
+            } else {
+                const span = document.createElement('span');
+                span.className = 'filter-count';
+                span.textContent = count;
+                btn.appendChild(span);
+            }
+        } else if (label) {
+            label.remove();
+        }
+    });
+}
+
 // ── File Browser ─────────────────────────────────────────────────────────────
 
 async function loadFiles(path) {
@@ -167,47 +230,10 @@ async function loadFiles(path) {
 
         updateBreadcrumb(path);
         allFiles = data.files || [];
-        let html = '';
+        allDirectories = data.directories || [];
 
-        // Directories
-        for (const dir of (data.directories || [])) {
-            html += `
-                <div class="file-item" onclick="navigateTo('${escapeAttr(dir.path)}')">
-                    <svg class="file-icon file-icon-dir" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                        <path d="M2 6a2 2 0 012-2h5l2 2h9a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
-                    </svg>
-                    <div class="file-info">
-                        <div class="file-name">${escapeHTML(dir.name)}</div>
-                        <div class="file-meta"><span>${dir.items} item${dir.items !== 1 ? 's' : ''}</span></div>
-                    </div>
-                    <svg class="file-icon" style="color:var(--text-muted)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-                </div>`;
-        }
-
-        // Files
-        for (const file of allFiles) {
-            const icon = getFileIcon(file.ext);
-            const isSelected = selectedFiles.has(file.path);
-            html += `
-                <div class="file-item ${isSelected ? 'selected' : ''}" onclick="toggleFile('${escapeAttr(file.path)}', ${file.size}, this)">
-                    <svg class="file-icon ${icon.cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${icon.svg}</svg>
-                    <div class="file-info">
-                        <div class="file-name">${escapeHTML(file.name)}</div>
-                        <div class="file-meta">
-                            <span>${formatSize(file.size)}</span>
-                            <span>${file.ext.replace('.', '').toUpperCase()}</span>
-                        </div>
-                    </div>
-                    <div class="file-check"></div>
-                </div>`;
-        }
-
-        if (!html) {
-            html = '<div class="empty-state"><p>This folder is empty</p></div>';
-        }
-
-        listEl.innerHTML = html;
-        updateActionBar();
+        updateFilterCounts();
+        renderFileList();
 
         // Check which files are already copied to the selected destination
         const subfolder = document.getElementById('subfolder-select').value;
@@ -217,6 +243,57 @@ async function loadFiles(path) {
     } catch (e) {
         listEl.innerHTML = `<div class="empty-state"><p>Error loading files</p></div>`;
     }
+}
+
+function renderFileList() {
+    const listEl = document.getElementById('file-list');
+    const filteredFiles = getVisibleFiles();
+    let html = '';
+
+    // Directories (always shown)
+    for (const dir of allDirectories) {
+        html += `
+            <div class="file-item" onclick="navigateTo('${escapeAttr(dir.path)}')">
+                <svg class="file-icon file-icon-dir" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                    <path d="M2 6a2 2 0 012-2h5l2 2h9a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
+                </svg>
+                <div class="file-info">
+                    <div class="file-name">${escapeHTML(dir.name)}</div>
+                    <div class="file-meta"><span>${dir.items} item${dir.items !== 1 ? 's' : ''}</span></div>
+                </div>
+                <svg class="file-icon" style="color:var(--text-muted)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>`;
+    }
+
+    // Files (filtered)
+    for (const file of filteredFiles) {
+        const icon = getFileIcon(file.ext);
+        const isSelected = selectedFiles.has(file.path);
+        html += `
+            <div class="file-item ${isSelected ? 'selected' : ''}" onclick="toggleFile('${escapeAttr(file.path)}', ${file.size}, this)">
+                <svg class="file-icon ${icon.cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${icon.svg}</svg>
+                <div class="file-info">
+                    <div class="file-name">${escapeHTML(file.name)}</div>
+                    <div class="file-meta">
+                        <span>${formatSize(file.size)}</span>
+                        <span>${file.ext.replace('.', '').toUpperCase()}</span>
+                    </div>
+                </div>
+                <div class="file-check"></div>
+            </div>`;
+    }
+
+    if (!html) {
+        if (currentFilter !== 'all' && allFiles.length > 0) {
+            html = `<div class="empty-state"><p>No ${currentFilter} files in this folder</p></div>`;
+        } else {
+            html = '<div class="empty-state"><p>This folder is empty</p></div>';
+        }
+    }
+
+    listEl.innerHTML = html;
+    updateActionBar();
+    renderCopiedBadges();
 }
 
 function navigateTo(path) {
@@ -255,16 +332,17 @@ function toggleFile(path, size, el) {
 }
 
 function selectAll() {
-    const items = document.querySelectorAll('.file-item');
-    allFiles.forEach(f => selectedFiles.add(f.path));
-    items.forEach(el => {
+    const visible = getVisibleFiles();
+    visible.forEach(f => selectedFiles.add(f.path));
+    document.querySelectorAll('.file-item').forEach(el => {
         if (el.querySelector('.file-check')) el.classList.add('selected');
     });
     updateActionBar();
 }
 
 function deselectAll() {
-    allFiles.forEach(f => selectedFiles.delete(f.path));
+    const visible = getVisibleFiles();
+    visible.forEach(f => selectedFiles.delete(f.path));
     document.querySelectorAll('.file-item.selected').forEach(el => el.classList.remove('selected'));
     updateActionBar();
 }
